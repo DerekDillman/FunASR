@@ -1,0 +1,11 @@
+# Web server
+fastapi>=0.110
+uvicorn[standard]>=0.29
+numpy
+
+# Speech recognition (not needed for --mock mode)
+funasr>=1.2.0
+torch>=2.0          # CPU build is fine: pip install torch --index-url https://download.pytorch.org/whl/cpu
+torchaudio
+modelscope          # model downloads
+soundfile

@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Local Recorder</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header>
+    <div class="brand">🎙️ Local Recorder</div>
+    <div class="status-chips">
+      <span id="asr-status" class="chip">ASR: checking…</span>
+      <span id="llm-status" class="chip">Summarizer: checking…</span>
+    </div>
+  </header>
+
+  <main>
+    <aside id="sidebar">
+      <div class="sidebar-head">
+        <h2>Recordings</h2>
+        <button id="refresh-btn" class="icon-btn" title="Refresh">⟳</button>
+      </div>
+      <ul id="session-list"></ul>
+    </aside>
+
+    <section id="content">
+      <!-- Live recording panel -->
+      <div id="record-panel" class="panel">
+        <div class="record-controls">
+          <input id="rec-name" type="text" placeholder="Recording name (optional)" />
+          <button id="record-btn" disabled>● Record</button>
+          <span id="rec-timer">00:00</span>
+          <canvas id="level-meter" width="160" height="28"></canvas>
+        </div>
+        <div id="rec-error" class="error hidden"></div>
+        <div id="live-transcript" class="transcript">
+          <div class="placeholder">Press <b>Record</b> and start talking — the transcript
+            appears here in real time. Everything stays on this machine.</div>
+        </div>
+      </div>
+
+      <!-- Saved session panel -->
+      <div id="session-panel" class="panel hidden">
+        <div class="session-head">
+          <input id="session-name" type="text" />
+          <div class="session-actions">
+            <a id="download-link" class="btn-secondary" download>Download .md</a>
+            <button id="delete-btn" class="btn-danger">Delete</button>
+            <button id="back-btn" class="btn-secondary">← New recording</button>
+          </div>
+        </div>
+        <div class="session-meta" id="session-meta"></div>
+        <audio id="session-audio" controls preload="none"></audio>
+
+        <div class="summary-bar">
+          <label>Summarize as:</label>
+          <select id="summary-style">
+            <option value="meeting">Meeting</option>
+            <option value="training">Training / lecture</option>
+            <option value="instructions">Instructions</option>
+            <option value="general">General</option>
+          </select>
+          <button id="summarize-btn">✨ Summarize</button>
+          <span id="summary-spinner" class="hidden">summarizing… (local LLM, can take a minute on CPU)</span>
+        </div>
+        <div id="summary-view" class="summary hidden"></div>
+
+        <h3>Transcript</h3>
+        <div id="session-transcript" class="transcript"></div>
+      </div>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
