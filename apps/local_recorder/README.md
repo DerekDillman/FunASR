@@ -20,7 +20,20 @@ Browser (mic → AudioWorklet → 16 kHz PCM over WebSocket)
          └── Ollama (optional)         summaries; extractive fallback if absent
 ```
 
-## Quick start
+## Quick start (Windows, one-liner)
+
+Paste this into PowerShell — it installs Git/Python if needed, clones the
+repo, sets up a venv with CPU-only PyTorch, creates a desktop shortcut, and
+optionally installs Ollama for summaries (everything under `C:\ai\HarvardRecorder`):
+
+```powershell
+irm https://raw.githubusercontent.com/DerekDillman/FunASR/refs/heads/claude/friendly-einstein-rcmnq0/apps/local_recorder/install_windows.ps1 | iex
+```
+
+Then double-click **Harvard Recorder** on your desktop. See
+[install_windows.ps1](install_windows.ps1) for what it does.
+
+## Quick start (manual / macOS / Linux)
 
 ```bash
 cd apps/local_recorder
