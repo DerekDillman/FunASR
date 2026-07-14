@@ -46,14 +46,79 @@ def process_job(job_id: str, video_path: Path, original_name: str):
         _set(job_id, status="extracting_audio",
              detail="Stripping audio track with ffmpeg...")
         pipeline.extract_audio(str(video_path), str(wav_path))
+        print(f"[{job_id}] audio extracted -> {wav_path}", flush=True)
+
+        _set(job_id, status="detecting_speech",
+             detail="Scanning the audio for spoken voices (VAD). "
+                    "First run downloads the models, which can take a while...")
+        regions = pipeline.detect_speech(str(wav_path))
+        speech_ms = sum(e - s for s, e in regions)
+        print(f"[{job_id}] VAD found {len(regions)} speech regions, "
+              f"{speech_ms // 1000}s of speech total", flush=True)
+
+        if not regions:
+            _set(job_id, status="done",
+                 transcript={"segments": [], "speakers": [], "full_text": ""},
+                 analysis=None,
+                 analysis_error="No speech was detected anywhere in the audio "
+                                "track, so there is nothing to transcribe or "
+                                "analyze. Check that the export actually "
+                                "contains audible voices (try playing the "
+                                "extracted audio file).",
+                 detail="Complete — no speech detected",
+                 finished_at=time.time())
+            return
+
+        def on_update(live, done, total, done_ms, total_ms):
+            pct = int(done_ms * 100 / total_ms) if total_ms else 100
+            _set(job_id,
+                 live_segments=list(live),
+                 progress={"regions_done": done, "regions_total": total,
+                           "speech_done_ms": done_ms,
+                           "speech_total_ms": total_ms, "percent": pct},
+                 detail=f"Transcribing speech region {done} of {total} "
+                        f"— {len(live)} voice segments heard so far")
 
         _set(job_id, status="transcribing",
-             detail="Running FunASR speech recognition + speaker diarization "
-                    "(first run downloads the models)...")
-        transcript = pipeline.transcribe(str(wav_path))
+             progress={"regions_done": 0, "regions_total": len(regions),
+                       "speech_done_ms": 0, "speech_total_ms": speech_ms,
+                       "percent": 0},
+             detail=f"Found {len(regions)} speech regions "
+                    f"({speech_ms // 60000}m {speech_ms % 60000 // 1000}s of "
+                    f"actual speech). Transcribing them one by one...")
+        live = pipeline.transcribe_regions(str(wav_path), regions, on_update)
+        print(f"[{job_id}] live pass done: {len(live)} segments with text",
+              flush=True)
 
-        _set(job_id, status="analyzing", transcript=transcript,
-             detail=f"Asking Ollama ({pipeline.OLLAMA_MODEL}) to analyze the speakers...")
+        _set(job_id, status="diarizing",
+             detail="All speech transcribed. Now separating the voices to "
+                    "figure out who said what (second pass with the speaker "
+                    "model)...")
+        transcript = pipeline.transcribe(str(wav_path))
+        if not transcript["segments"] and live:
+            # Diarization pass came back empty but the live pass heard text;
+            # keep the live result rather than discarding it.
+            transcript = {"segments": live, "speakers": ["Voice"],
+                          "full_text": " ".join(s["text"] for s in live)}
+        _set(job_id, transcript=transcript)
+        print(f"[{job_id}] diarization done: {len(transcript['segments'])} "
+              f"segments, speakers: {transcript['speakers']}", flush=True)
+
+        if not transcript["segments"]:
+            _set(job_id, status="done", analysis=None,
+                 analysis_error="Speech-like audio was detected but nothing "
+                                "could be transcribed into words, so the LLM "
+                                "analysis was skipped. The audio may be too "
+                                "noisy/faint, or in a language the ASR model "
+                                "doesn't handle well (see the README's "
+                                "language note).",
+                 detail="Complete — no transcribable speech",
+                 finished_at=time.time())
+            return
+
+        _set(job_id, status="analyzing",
+             detail=f"Asking Ollama ({pipeline.OLLAMA_MODEL}) to analyze the "
+                    f"speakers...")
         try:
             analysis = pipeline.analyze_with_ollama(
                 transcript["segments"], transcript["speakers"])
@@ -66,6 +131,7 @@ def process_job(job_id: str, video_path: Path, original_name: str):
              analysis=analysis, analysis_error=analysis_error,
              finished_at=time.time())
     except Exception as exc:
+        print(f"[{job_id}] FAILED: {exc}", flush=True)
         _set(job_id, status="error", detail=str(exc), finished_at=time.time())
 
 

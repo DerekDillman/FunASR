@@ -66,7 +66,7 @@
     border: 1px solid; background: transparent;
   }
 
-  #transcript { max-height: 60vh; overflow-y: auto; padding: 8px 0; }
+  #transcript { max-height: 65vh; overflow-y: auto; padding: 8px 0; }
   .seg {
     display: grid; grid-template-columns: 84px 1fr; gap: 10px;
     padding: 8px 16px; cursor: pointer; border-left: 3px solid transparent;
@@ -77,7 +77,6 @@
     color: var(--muted); font-size: .8rem; font-variant-numeric: tabular-nums;
     padding-top: 2px;
   }
-  .seg .ts:hover { color: var(--accent); }
   .seg .who { font-weight: 600; font-size: .8rem; margin-bottom: 2px; }
   .seg .txt { font-size: .92rem; line-height: 1.45; }
 
@@ -88,6 +87,14 @@
   #analysis strong { color: #fff; }
   #analysis .warn { color: #ffbe5e; }
   .ts-link { color: var(--accent); cursor: pointer; text-decoration: underline; }
+
+  .bar { height: 8px; background: var(--panel2); border: 1px solid var(--border);
+         border-radius: 99px; overflow: hidden; margin: 12px 0 6px; }
+  .bar > div { height: 100%; background: var(--accent); width: 0%; transition: width .6s; }
+  .stagelist { list-style: none; margin: 10px 0 0; }
+  .stagelist li { padding: 3px 0; color: var(--muted); font-size: .88rem; }
+  .stagelist li.now { color: var(--text); font-weight: 600; }
+  .stagelist li.doneStage { color: #3ecf8e; }
 
   .stack { display: flex; flex-direction: column; gap: 20px; }
   button.reset {
@@ -117,12 +124,12 @@
           <video id="player" controls></video>
         </div>
         <div class="panel">
-          <h2>Voice Analysis <span id="analysis-model" style="text-transform:none"></span></h2>
+          <h2 id="analysis-title">Progress</h2>
           <div id="analysis"></div>
         </div>
       </div>
       <div class="panel">
-        <h2>Transcript — click a line to jump the video</h2>
+        <h2 id="transcript-title">Live transcript — voices appear as they are heard</h2>
         <div class="legend" id="legend"></div>
         <div id="transcript"></div>
       </div>
@@ -132,11 +139,20 @@
 
 <script>
 const SPK_COLORS = ['--spk1','--spk2','--spk3','--spk4','--spk5','--spk6','--spk7','--spk8'];
+const STAGES = [
+  ['extracting_audio', 'Extract audio track (ffmpeg)'],
+  ['detecting_speech', 'Scan audio for voices (VAD)'],
+  ['transcribing',     'Transcribe speech as it is heard'],
+  ['diarizing',        'Separate voices — who said what'],
+  ['analyzing',        'Ollama speaker analysis'],
+];
 const dz = document.getElementById('dropzone');
 const fi = document.getElementById('fileinput');
 const statusBox = document.getElementById('status');
 const statusText = document.getElementById('status-text');
-let segments = [];
+const player = document.getElementById('player');
+let shellShown = false;
+let lastLiveCount = -1;
 
 fetch('/api/config').then(r => r.json()).then(c => {
   document.getElementById('cfg-model').textContent = c.ollama_model;
@@ -159,7 +175,7 @@ function setStatus(msg, isError) {
 
 async function upload(file) {
   dz.style.display = 'none';
-  setStatus(`Uploading ${file.name} (${(file.size/1048576).toFixed(1)} MB)...`);
+  setStatus(`Uploading ${file.name} (${(file.size/1048576).toFixed(1)} MB)... large files can take several minutes over the network.`);
   const form = new FormData();
   form.append('file', file);
   try {
@@ -173,26 +189,45 @@ async function upload(file) {
 }
 
 async function poll(jobId) {
-  const labels = {
-    queued: 'Queued...',
-    extracting_audio: 'Extracting audio track from video (ffmpeg)...',
-    transcribing: 'Transcribing & separating voices (FunASR — first run downloads models)...',
-    analyzing: 'Analyzing speakers with Ollama...',
-  };
   while (true) {
     let job;
     try {
       job = await (await fetch(`/api/jobs/${jobId}`)).json();
     } catch { await sleep(2000); continue; }
-    if (job.status === 'done') { render(jobId, job); return; }
-    if (job.status === 'error') { setStatus('Processing failed: ' + job.detail, true); return; }
-    setStatus(labels[job.status] || job.detail || job.status);
+    if (job.status === 'error') {
+      setStatus('Processing failed: ' + job.detail, true);
+      return;
+    }
+    if (job.status === 'done') {
+      ensureShell(jobId);
+      renderFinal(job);
+      return;
+    }
+    ensureShell(jobId);
+    renderProgress(job);
     await sleep(1500);
   }
 }
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
+function ensureShell(jobId) {
+  if (shellShown) return;
+  shellShown = true;
+  statusBox.style.display = 'none';
+  document.getElementById('results').style.display = 'block';
+  player.src = `/media/${jobId}/video`;
+  document.getElementById('audio-link').href = `/media/${jobId}/audio`;
+  player.addEventListener('timeupdate', () => {
+    const t = player.currentTime;
+    document.querySelectorAll('.seg').forEach(el => {
+      el.classList.toggle('active',
+        t >= +el.dataset.start && t <= +el.dataset.end + 0.5);
+    });
+  });
+}
+
 function spkColor(id) {
+  if (id < 0) return 'var(--muted)';
   return `var(${SPK_COLORS[id % SPK_COLORS.length]})`;
 }
 
@@ -203,37 +238,10 @@ function fmtClock(sec) {
            : `${m}:${String(s).padStart(2,'0')}`;
 }
 
-function render(jobId, job) {
-  statusBox.style.display = 'none';
-  document.getElementById('results').style.display = 'block';
-
-  const player = document.getElementById('player');
-  player.src = `/media/${jobId}/video`;
-  document.getElementById('audio-link').href = `/media/${jobId}/audio`;
-
-  segments = (job.transcript && job.transcript.segments) || [];
-
-  // Legend
-  const legend = document.getElementById('legend');
-  const seen = new Map();
-  segments.forEach(s => { if (!seen.has(s.speaker_id)) seen.set(s.speaker_id, s.speaker); });
-  legend.innerHTML = '';
-  [...seen.entries()].sort((a,b) => a[0]-b[0]).forEach(([id, name]) => {
-    const chip = document.createElement('span');
-    chip.className = 'chip';
-    chip.textContent = name;
-    chip.style.color = spkColor(id);
-    chip.style.borderColor = spkColor(id);
-    legend.appendChild(chip);
-  });
-
-  // Transcript
+function renderSegments(segments) {
   const tr = document.getElementById('transcript');
   tr.innerHTML = '';
-  if (!segments.length) {
-    tr.innerHTML = '<div style="padding:16px;color:var(--muted)">No speech detected in this video.</div>';
-  }
-  segments.forEach((s, i) => {
+  segments.forEach(s => {
     const div = document.createElement('div');
     div.className = 'seg';
     div.dataset.start = s.start_ms / 1000;
@@ -250,36 +258,96 @@ function render(jobId, job) {
     });
     tr.appendChild(div);
   });
+  return tr;
+}
 
-  // Highlight the transcript line matching video playback position.
-  player.addEventListener('timeupdate', () => {
-    const t = player.currentTime;
-    let active = null;
-    document.querySelectorAll('.seg').forEach(el => {
-      const on = t >= +el.dataset.start && t <= +el.dataset.end + 0.5;
-      el.classList.toggle('active', on);
-      if (on) active = el;
-    });
-    if (active) active.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+function renderProgress(job) {
+  // Stage checklist + progress bar in the left panel.
+  document.getElementById('analysis-title').textContent = 'Progress';
+  const currentIdx = STAGES.findIndex(([key]) => key === job.status);
+  const stageItems = STAGES.map(([key, label], i) => {
+    const cls = i < currentIdx ? 'doneStage' : (i === currentIdx ? 'now' : '');
+    const mark = i < currentIdx ? '✔' : (i === currentIdx ? '▶' : '○');
+    return `<li class="${cls}">${mark} ${i + 1}. ${label}</li>`;
+  }).join('');
+
+  let barHtml = '';
+  const p = job.progress;
+  if (p && job.status === 'transcribing') {
+    barHtml = `<div class="bar"><div style="width:${p.percent}%"></div></div>
+      <p style="color:var(--muted)">${p.percent}% — ${fmtClock(p.speech_done_ms/1000)} of ${fmtClock(p.speech_total_ms/1000)} detected speech · region ${p.regions_done}/${p.regions_total}</p>`;
+  } else if (job.status === 'diarizing' || job.status === 'analyzing') {
+    barHtml = `<div class="bar"><div style="width:100%"></div></div>`;
+  }
+
+  document.getElementById('analysis').innerHTML = `
+    <p><span class="spinner"></span><strong>${escapeHtml(job.detail || job.status)}</strong></p>
+    ${barHtml}
+    <ul class="stagelist">${stageItems}</ul>`;
+
+  // Live transcript segments as they are heard.
+  const live = job.live_segments || [];
+  if (live.length !== lastLiveCount) {
+    const tr = document.getElementById('transcript');
+    const nearBottom = tr.scrollHeight - tr.scrollTop - tr.clientHeight < 150;
+    renderSegments(live);
+    if (nearBottom) tr.scrollTop = tr.scrollHeight;
+    lastLiveCount = live.length;
+    document.getElementById('legend').innerHTML =
+      `<span class="chip" style="color:var(--muted);border-color:var(--border)">🎤 ${live.length} voice segment${live.length === 1 ? '' : 's'} heard — speakers get labeled in the "separate voices" stage</span>`;
+  }
+  if (live.length === 0 && lastLiveCount !== 0) {
+    document.getElementById('transcript').innerHTML =
+      '<div style="padding:16px;color:var(--muted)">Nothing heard yet...</div>';
+    lastLiveCount = 0;
+  }
+}
+
+function renderFinal(job) {
+  const segments = (job.transcript && job.transcript.segments) || [];
+  document.getElementById('transcript-title').textContent =
+    'Transcript — click a line to jump the video';
+  document.getElementById('analysis-title').textContent = 'Voice Analysis';
+
+  // Legend of identified speakers
+  const legend = document.getElementById('legend');
+  const seen = new Map();
+  segments.forEach(s => { if (!seen.has(s.speaker_id)) seen.set(s.speaker_id, s.speaker); });
+  legend.innerHTML = '';
+  [...seen.entries()].sort((a,b) => a[0]-b[0]).forEach(([id, name]) => {
+    const chip = document.createElement('span');
+    chip.className = 'chip';
+    chip.textContent = name;
+    chip.style.color = spkColor(id);
+    chip.style.borderColor = spkColor(id);
+    legend.appendChild(chip);
   });
 
-  // Ollama analysis
+  const tr = renderSegments(segments);
+  if (!segments.length) {
+    tr.innerHTML = '<div style="padding:16px;color:var(--muted)">No speech detected in this video.</div>';
+  }
+
   const an = document.getElementById('analysis');
   if (job.analysis) {
     an.innerHTML = mdToHtml(job.analysis);
-    // Make [m:ss] style timestamps in the analysis clickable too.
+    // Make timestamps in the analysis clickable too.
     an.innerHTML = an.innerHTML.replace(/(\d{1,2}:\d{2}(?::\d{2})?)/g,
       '<span class="ts-link" onclick="seekTo(\'$1\')">$1</span>');
   } else {
-    an.innerHTML = `<p class="warn">⚠ Ollama analysis unavailable: ${escapeHtml(job.analysis_error || 'unknown error')}</p>
-                    <p style="color:var(--muted)">The transcript on the right is still complete.</p>`;
+    an.innerHTML = `<p class="warn">⚠ ${escapeHtml(job.analysis_error || 'No analysis available.')}</p>`;
   }
+
+  // Scroll-follow during playback only once the final transcript is in.
+  player.addEventListener('timeupdate', () => {
+    const active = document.querySelector('.seg.active');
+    if (active) active.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  });
 }
 
 function seekTo(ts) {
   const parts = ts.split(':').map(Number);
   const sec = parts.length === 3 ? parts[0]*3600 + parts[1]*60 + parts[2] : parts[0]*60 + parts[1];
-  const player = document.getElementById('player');
   player.currentTime = sec;
   player.play();
 }

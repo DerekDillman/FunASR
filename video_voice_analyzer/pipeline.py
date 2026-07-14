@@ -25,6 +25,8 @@ ASR_MODEL = os.environ.get("ASR_MODEL", "paraformer-zh")
 ASR_DEVICE = os.environ.get("ASR_DEVICE", "")  # "" = auto-detect
 
 _model = None
+_vad_model = None
+_live_model = None
 _model_lock = threading.Lock()
 
 
@@ -78,6 +80,78 @@ def get_model():
                 disable_update=True,
             )
         return _model
+
+
+def get_vad_model():
+    """Small voice-activity-detection model, used for the fast pre-scan."""
+    global _vad_model
+    with _model_lock:
+        if _vad_model is None:
+            from funasr import AutoModel
+            _vad_model = AutoModel(model="fsmn-vad", device=_detect_device(),
+                                   disable_update=True)
+        return _vad_model
+
+
+def get_live_model():
+    """ASR-only model used to stream text out region-by-region while the
+    full diarization pass runs at the end. Loaded separately so a failure
+    in speaker clustering can't break the live pass."""
+    global _live_model
+    with _model_lock:
+        if _live_model is None:
+            from funasr import AutoModel
+            _live_model = AutoModel(model=ASR_MODEL, device=_detect_device(),
+                                    disable_update=True)
+        return _live_model
+
+
+def detect_speech(wav_path: str) -> list:
+    """Fast VAD scan of the whole file. Returns [(start_ms, end_ms), ...]."""
+    res = get_vad_model().generate(input=wav_path)
+    if not res:
+        return []
+    return [(int(s), int(e)) for s, e in (res[0].get("value") or [])]
+
+
+def transcribe_regions(wav_path: str, regions: list, on_update) -> list:
+    """Transcribe each detected speech region individually, calling
+    on_update(live_segments, regions_done, regions_total, done_ms, total_ms)
+    after every region so the UI can show voices as they are heard."""
+    import soundfile as sf
+
+    audio, sr = sf.read(wav_path, dtype="float32")
+    model = get_live_model()
+    total = len(regions)
+    total_ms = sum(e - s for s, e in regions)
+    done_ms = 0
+    live = []
+    pad_ms = 150
+
+    for i, (start, end) in enumerate(regions):
+        a = max(0, int((start - pad_ms) * sr / 1000))
+        b = min(len(audio), int((end + pad_ms) * sr / 1000))
+        text = ""
+        try:
+            res = model.generate(input=audio[a:b], fs=sr, disable_pbar=True)
+            if res:
+                text = (res[0].get("text") or "").strip()
+        except Exception as exc:
+            print(f"[live-asr] region {i} ({start}-{end}ms) failed: {exc}",
+                  flush=True)
+        done_ms += end - start
+        if text:
+            live.append({
+                "speaker_id": -1,
+                "speaker": "Voice",
+                "start_ms": start,
+                "end_ms": end,
+                "start": _ms_to_clock(start),
+                "end": _ms_to_clock(end),
+                "text": text,
+            })
+        on_update(live, i + 1, total, done_ms, total_ms)
+    return live
 
 
 def _ms_to_clock(ms: int) -> str:
