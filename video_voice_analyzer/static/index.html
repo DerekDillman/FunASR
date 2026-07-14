@@ -192,7 +192,12 @@ async function poll(jobId) {
   while (true) {
     let job;
     try {
-      job = await (await fetch(`/api/jobs/${jobId}`)).json();
+      const resp = await fetch(`/api/jobs/${jobId}`);
+      if (resp.status === 404) {
+        setStatus('This job no longer exists (the server was restarted). Reload the page and upload the video again.', true);
+        return;
+      }
+      job = await resp.json();
     } catch { await sleep(2000); continue; }
     if (job.status === 'error') {
       setStatus('Processing failed: ' + job.detail, true);
