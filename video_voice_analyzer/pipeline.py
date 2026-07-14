@@ -47,28 +47,81 @@ AUDIO_FILTER = os.environ.get("AUDIO_FILTER", "highpass=f=100,dynaudnorm=m=30")
 VAD_THRES = float(os.environ.get("VAD_SPEECH_NOISE_THRES", "0.2"))
 
 
-def extract_audio(video_path: str, wav_path: str) -> None:
-    """Strip the audio track from the video into a 16 kHz mono WAV file."""
-    cmd = [
-        "ffmpeg", "-y", "-i", video_path,
-        "-vn",                # drop the video stream
-        "-acodec", "pcm_s16le",
-        "-ar", "16000",
-        "-ac", "1",
-    ]
-    if AUDIO_FILTER:
-        cmd += ["-af", AUDIO_FILTER]
-    cmd.append(wav_path)
+def probe_audio_stream(video_path: str):
+    """Codec and duration of the source file's first audio stream, so a
+    short *source* stream can be told apart from a short *extraction*."""
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True)
-    except FileNotFoundError:
-        raise RuntimeError(
-            "ffmpeg is not installed or not on PATH. "
-            "Install it with e.g. 'sudo apt install ffmpeg'."
-        ) from None
-    if proc.returncode != 0:
-        tail = proc.stderr.strip().splitlines()[-1] if proc.stderr.strip() else "unknown error"
-        raise RuntimeError(f"ffmpeg failed to extract audio: {tail}")
+        proc = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "a:0",
+             "-show_entries", "stream=codec_name,duration",
+             "-of", "json", video_path],
+            capture_output=True, text=True)
+        streams = json.loads(proc.stdout).get("streams") or []
+        if not streams:
+            return None
+        info = streams[0]
+        dur = info.get("duration")
+        return {"codec": info.get("codec_name"),
+                "duration_s": round(float(dur), 1) if dur else None}
+    except Exception:
+        return None
+
+
+def extract_audio(video_path: str, wav_path: str, expected_s=None) -> str:
+    """Strip the audio track into a 16 kHz mono WAV file.
+
+    Segmented exports (e.g. Frigate) often carry timestamp gaps that make a
+    plain decode stop early, so several strategies are tried and the one
+    yielding the longest audio wins. `aresample=async=1` pads the gaps with
+    silence, which also keeps transcript timestamps aligned with the video.
+    Returns a description of the strategy used.
+    """
+    out_args = ["-vn", "-sn", "-dn", "-acodec", "pcm_s16le",
+                "-ar", "16000", "-ac", "1"]
+    gap_fill = "aresample=async=1:first_pts=0"
+    filt = gap_fill + ("," + AUDIO_FILTER if AUDIO_FILTER else "")
+    attempts = [
+        ("gap-filling",
+         ["-fflags", "+genpts", "-i", video_path, "-map", "0:a:0"]
+         + out_args + ["-af", filt]),
+        ("error-tolerant",
+         ["-ignore_editlist", "1", "-fflags", "+genpts+discardcorrupt",
+          "-err_detect", "ignore_err", "-i", video_path, "-map", "0:a:0"]
+         + out_args + ["-af", filt]),
+        ("plain",
+         ["-i", video_path] + out_args
+         + (["-af", AUDIO_FILTER] if AUDIO_FILTER else [])),
+    ]
+
+    tmp_path = wav_path + ".try.wav"
+    best_dur, best_name, last_err = 0.0, None, "unknown error"
+    for name, args in attempts:
+        try:
+            proc = subprocess.run(["ffmpeg", "-y"] + args + [tmp_path],
+                                  capture_output=True, text=True)
+        except FileNotFoundError:
+            raise RuntimeError(
+                "ffmpeg is not installed or not on PATH. "
+                "Install it with e.g. 'winget install ffmpeg'."
+            ) from None
+        if proc.returncode != 0:
+            if proc.stderr.strip():
+                last_err = proc.stderr.strip().splitlines()[-1]
+            print(f"[extract:{name}] failed: {last_err}", flush=True)
+            continue
+        dur = probe_duration(tmp_path) or 0.0
+        print(f"[extract:{name}] got {dur / 60:.1f} min of audio", flush=True)
+        if dur > best_dur:
+            best_dur, best_name = dur, name
+            os.replace(tmp_path, wav_path)
+        # Good enough — no need to try the remaining strategies.
+        if expected_s and dur >= 0.95 * expected_s:
+            break
+    if os.path.exists(tmp_path):
+        os.remove(tmp_path)
+    if best_name is None:
+        raise RuntimeError(f"ffmpeg could not extract any audio: {last_err}")
+    return best_name
 
 
 def _detect_device() -> str:

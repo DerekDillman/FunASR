@@ -44,23 +44,39 @@ def process_job(job_id: str, video_path: Path, original_name: str):
     wav_path = _job_dir(job_id) / "audio.wav"
     try:
         _set(job_id, status="extracting_audio",
-             detail="Stripping audio track with ffmpeg (with far-field "
-                    "cleanup: rumble filter + loudness boost)...")
-        pipeline.extract_audio(str(video_path), str(wav_path))
+             detail="Stripping audio track with ffmpeg (gap-tolerant decode "
+                    "+ far-field cleanup: rumble filter, loudness boost)...")
+        video_dur = pipeline.probe_duration(str(video_path))
+        src_audio = pipeline.probe_audio_stream(str(video_path))
+        print(f"[{job_id}] source: video {video_dur and round(video_dur/60,1)} "
+              f"min, audio stream: {src_audio}", flush=True)
+        method = pipeline.extract_audio(str(video_path), str(wav_path),
+                                        expected_s=video_dur)
 
         stats = pipeline.audio_stats(str(wav_path))
-        video_dur = pipeline.probe_duration(str(video_path))
         stats["video_duration_s"] = video_dur
+        stats["source_audio"] = src_audio
+        stats["extract_method"] = method
         _set(job_id, audio_stats=stats)
         dur_note = (f"{stats['duration_s'] / 60:.1f} min of audio, "
                     f"peak {stats['peak_db']} dB, average {stats['rms_db']} dB")
         mismatch = ""
-        if video_dur and abs(video_dur - stats["duration_s"]) > 10:
-            mismatch = (f" WARNING: the video is {video_dur / 60:.1f} min long "
-                        f"but its audio track is only "
-                        f"{stats['duration_s'] / 60:.1f} min — the export's "
-                        f"audio may be incomplete.")
-        print(f"[{job_id}] audio extracted: {dur_note}.{mismatch}", flush=True)
+        if video_dur and video_dur - stats["duration_s"] > 10:
+            src_dur = (src_audio or {}).get("duration_s")
+            if src_dur and video_dur - src_dur > 10:
+                mismatch = (f" WARNING: the export itself only contains "
+                            f"{src_dur / 60:.1f} min of audio for a "
+                            f"{video_dur / 60:.1f} min video — the recording "
+                            f"source (e.g. Frigate) did not record audio for "
+                            f"most of it. Check the camera/NVR audio "
+                            f"recording settings.")
+            else:
+                mismatch = (f" WARNING: the video is {video_dur / 60:.1f} min "
+                            f"long but only {stats['duration_s'] / 60:.1f} min "
+                            f"of audio could be decoded — the export's audio "
+                            f"may be damaged.")
+        print(f"[{job_id}] audio extracted ({method}): {dur_note}.{mismatch}",
+              flush=True)
 
         _set(job_id, status="detecting_speech",
              detail=f"Audio extracted ({dur_note}).{mismatch} Scanning for "
