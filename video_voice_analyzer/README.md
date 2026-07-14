@@ -68,7 +68,9 @@ ASR_DEVICE=cuda:0 python app.py
 | `ASR_DEVICE` | auto | `cuda:0`, `cuda:1`, or `cpu` |
 | `PORT` / `HOST` | `8000` / `0.0.0.0` | Web server bind |
 | `DATA_DIR` | `./data` | Where uploads, extracted audio, and results live |
-| `MAX_UPLOAD_MB` | `2048` | Upload size limit |
+| `MAX_UPLOAD_MB` | `20480` | Upload size limit (20 GB default — hour-long camera exports are fine) |
+| `ASR_BATCH_S` | `300` | FunASR batch size in seconds of audio; lower it if you hit CUDA OOM on very long recordings |
+| `ASR_BATCH_THRESHOLD_S` | `60` | See FunASR OOM guidance in `docs/tutorial` |
 
 Example pointing at a remote Ollama box:
 

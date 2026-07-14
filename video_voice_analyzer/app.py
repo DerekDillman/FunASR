@@ -22,7 +22,7 @@ DATA_DIR = Path(os.environ.get("DATA_DIR", BASE_DIR / "data"))
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 ALLOWED_EXTENSIONS = {".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v"}
-MAX_UPLOAD_BYTES = int(os.environ.get("MAX_UPLOAD_MB", "2048")) * 1024 * 1024
+MAX_UPLOAD_BYTES = int(os.environ.get("MAX_UPLOAD_MB", "20480")) * 1024 * 1024
 
 app = FastAPI(title="Video Voice Analyzer")
 

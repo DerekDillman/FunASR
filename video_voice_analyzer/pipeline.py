@@ -94,8 +94,10 @@ def transcribe(wav_path: str) -> dict:
     model = get_model()
     res = model.generate(
         input=wav_path,
-        batch_size_s=300,
-        batch_size_threshold_s=60,
+        # Tunable via env for long recordings: lower these if you hit
+        # CUDA out-of-memory on multi-hour audio.
+        batch_size_s=int(os.environ.get("ASR_BATCH_S", "300")),
+        batch_size_threshold_s=int(os.environ.get("ASR_BATCH_THRESHOLD_S", "60")),
     )
     if not res:
         return {"segments": [], "speakers": [], "full_text": ""}
