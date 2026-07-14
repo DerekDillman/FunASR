@@ -64,7 +64,8 @@ ASR_DEVICE=cuda:0 python app.py
 | `OLLAMA_MODEL` | `qwen3:30b-a3b` | Model used for the speaker analysis |
 | `OLLAMA_TIMEOUT` | `600` | Seconds to wait for the analysis |
 | `OLLAMA_MAX_TRANSCRIPT_CHARS` | `24000` | Transcript truncation limit for the LLM prompt |
-| `ASR_MODEL` | `paraformer-zh` | FunASR ASR model (see note below) |
+| `ASR_MODEL` | `FunAudioLLM/Fun-ASR-Nano-2512` | FunASR ASR model (see note below) |
+| `ASR_LANGUAGE` | *(auto-detect)* | Optional language hint for Fun-ASR-Nano, e.g. `English` |
 | `ASR_DEVICE` | auto | `cuda:0`, `cuda:1`, or `cpu` |
 | `PORT` / `HOST` | `8000` / `0.0.0.0` | Web server bind |
 | `DATA_DIR` | `./data` | Where uploads, extracted audio, and results live |
@@ -80,12 +81,14 @@ OLLAMA_URL=http://192.168.1.50:11434 OLLAMA_MODEL=qwen3:14b python app.py
 
 ### Language note
 
-The default `paraformer-zh` + `cam++` pipeline is the FunASR combination with
-first-class speaker-diarization support (it emits `sentence_info` with speaker
-labels); it's strongest on Mandarin and handles mixed zh/en. For other
-languages, any FunASR AutoModel that supports `spk_model` can be substituted
-via `ASR_MODEL` (e.g. `FunAudioLLM/Fun-ASR-Nano-2512`, 31 languages — requires
-`pip install tiktoken huggingface_hub`).
+The default model is `Fun-ASR-Nano` — multilingual (31 languages including
+English) with per-utterance automatic language detection, and it supports the
+cam++ speaker-diarization hookup (`sentence_info` with speaker labels). Its
+weights download from Hugging Face on first run. You can pin the language with
+`ASR_LANGUAGE=English` if auto-detection ever misfires.
+
+Alternative: `ASR_MODEL=paraformer-zh` switches to the classic
+Mandarin-focused paraformer pipeline (downloads from ModelScope).
 
 ## API
 

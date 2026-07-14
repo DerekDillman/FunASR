@@ -21,8 +21,15 @@ OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434").rstrip("/")
 # high quality and fast on that hardware. See README for alternatives.
 OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen3:30b-a3b")
 
-ASR_MODEL = os.environ.get("ASR_MODEL", "paraformer-zh")
+# Fun-ASR-Nano is multilingual (31 languages incl. English) with automatic
+# language detection, and supports the cam++ speaker-diarization hookup
+# (see tests_models/test_fun_asr_nano_spk.py). Set ASR_MODEL=paraformer-zh
+# for the Mandarin-focused pipeline instead.
+ASR_MODEL = os.environ.get("ASR_MODEL", "FunAudioLLM/Fun-ASR-Nano-2512")
 ASR_DEVICE = os.environ.get("ASR_DEVICE", "")  # "" = auto-detect
+# Optional language hint, e.g. "English". Empty = auto-detect per utterance.
+ASR_LANGUAGE = os.environ.get("ASR_LANGUAGE", "")
+_IS_LLM_ASR = "fun-asr" in ASR_MODEL.lower()
 
 _model = None
 _vad_model = None
@@ -64,21 +71,48 @@ def _detect_device() -> str:
     return "cpu"
 
 
+def _model_kwargs(with_diarization: bool) -> dict:
+    kwargs = dict(model=ASR_MODEL, device=_detect_device(), disable_update=True)
+    if _IS_LLM_ASR:
+        # Mirrors tests_models/test_fun_asr_nano_spk.py
+        kwargs.update(trust_remote_code=True, remote_code="./model.py", hub="hf")
+        if with_diarization:
+            kwargs.update(
+                vad_model="iic/speech_fsmn_vad_zh-cn-16k-common-pytorch",
+                vad_kwargs={"max_single_segment_time": 30000},
+                spk_model="iic/speech_campplus_sv_zh-cn_16k-common",
+            )
+    elif with_diarization:
+        kwargs.update(
+            vad_model="fsmn-vad",
+            vad_kwargs={"max_single_segment_time": 60000},
+            punc_model="ct-punc",
+            spk_model="cam++",
+        )
+    return kwargs
+
+
+def _generate_kwargs() -> dict:
+    if _IS_LLM_ASR:
+        kwargs = {"cache": {}, "batch_size": 1}
+        if ASR_LANGUAGE:
+            kwargs["language"] = ASR_LANGUAGE
+        return kwargs
+    return {
+        # Tunable via env for long recordings: lower these if you hit
+        # CUDA out-of-memory on multi-hour audio.
+        "batch_size_s": int(os.environ.get("ASR_BATCH_S", "300")),
+        "batch_size_threshold_s": int(os.environ.get("ASR_BATCH_THRESHOLD_S", "60")),
+    }
+
+
 def get_model():
     """Lazily load the FunASR pipeline once and reuse it across requests."""
     global _model
     with _model_lock:
         if _model is None:
             from funasr import AutoModel
-            _model = AutoModel(
-                model=ASR_MODEL,
-                vad_model="fsmn-vad",
-                vad_kwargs={"max_single_segment_time": 60000},
-                punc_model="ct-punc",
-                spk_model="cam++",
-                device=_detect_device(),
-                disable_update=True,
-            )
+            _model = AutoModel(**_model_kwargs(with_diarization=True))
         return _model
 
 
@@ -101,8 +135,7 @@ def get_live_model():
     with _model_lock:
         if _live_model is None:
             from funasr import AutoModel
-            _live_model = AutoModel(model=ASR_MODEL, device=_detect_device(),
-                                    disable_update=True)
+            _live_model = AutoModel(**_model_kwargs(with_diarization=False))
         return _live_model
 
 
@@ -118,6 +151,8 @@ def transcribe_regions(wav_path: str, regions: list, on_update) -> list:
     """Transcribe each detected speech region individually, calling
     on_update(live_segments, regions_done, regions_total, done_ms, total_ms)
     after every region so the UI can show voices as they are heard."""
+    import tempfile
+
     import soundfile as sf
 
     audio, sr = sf.read(wav_path, dtype="float32")
@@ -127,13 +162,18 @@ def transcribe_regions(wav_path: str, regions: list, on_update) -> list:
     done_ms = 0
     live = []
     pad_ms = 150
+    clip_path = os.path.join(tempfile.gettempdir(), "vva_live_clip.wav")
 
     for i, (start, end) in enumerate(regions):
         a = max(0, int((start - pad_ms) * sr / 1000))
         b = min(len(audio), int((end + pad_ms) * sr / 1000))
         text = ""
         try:
-            res = model.generate(input=audio[a:b], fs=sr, disable_pbar=True)
+            # Written to a file because that is the most universally
+            # supported input path across FunASR model types.
+            sf.write(clip_path, audio[a:b], sr)
+            res = model.generate(input=clip_path, disable_pbar=True,
+                                 **_generate_kwargs())
             if res:
                 text = (res[0].get("text") or "").strip()
         except Exception as exc:
@@ -166,13 +206,7 @@ def _ms_to_clock(ms: int) -> str:
 def transcribe(wav_path: str) -> dict:
     """Run ASR + speaker diarization. Returns segments merged into speaker turns."""
     model = get_model()
-    res = model.generate(
-        input=wav_path,
-        # Tunable via env for long recordings: lower these if you hit
-        # CUDA out-of-memory on multi-hour audio.
-        batch_size_s=int(os.environ.get("ASR_BATCH_S", "300")),
-        batch_size_threshold_s=int(os.environ.get("ASR_BATCH_THRESHOLD_S", "60")),
-    )
+    res = model.generate(input=wav_path, **_generate_kwargs())
     if not res:
         return {"segments": [], "speakers": [], "full_text": ""}
 
@@ -181,7 +215,7 @@ def transcribe(wav_path: str) -> dict:
 
     segments = []
     for sent in sentences:
-        text = (sent.get("text") or "").strip()
+        text = (sent.get("text") or sent.get("sentence") or "").strip()
         if not text:
             continue
         spk = sent.get("spk", 0)

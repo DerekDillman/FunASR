@@ -1,7 +1,13 @@
-funasr>=1.2.0
-modelscope
 torch
 torchaudio
+# Install FunASR from this repo clone so the newest model code
+# (Fun-ASR-Nano etc.) is guaranteed to be available.
+-e ..
+# Required by Fun-ASR-Nano
+tiktoken
+huggingface_hub
+modelscope
+soundfile
 fastapi
 uvicorn[standard]
 python-multipart
