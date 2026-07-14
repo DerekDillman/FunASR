@@ -67,6 +67,8 @@ ASR_DEVICE=cuda:0 python app.py
 | `ASR_MODEL` | `FunAudioLLM/Fun-ASR-Nano-2512` | FunASR ASR model (see note below) |
 | `ASR_LANGUAGE` | *(auto-detect)* | Optional language hint for Fun-ASR-Nano, e.g. `English` |
 | `ASR_DEVICE` | auto | `cuda:0`, `cuda:1`, or `cpu` |
+| `AUDIO_FILTER` | `highpass=f=100,dynaudnorm=m=30` | ffmpeg filter applied during extraction — cuts rumble and boosts faint far-field speech. Set empty to disable |
+| `VAD_SPEECH_NOISE_THRES` | `0.2` | Voice-detection sensitivity (FunASR default is 0.6). Lower = catches fainter speech, at the cost of more noise being transcribed |
 | `PORT` / `HOST` | `8000` / `0.0.0.0` | Web server bind |
 | `DATA_DIR` | `./data` | Where uploads, extracted audio, and results live |
 | `MAX_UPLOAD_MB` | `20480` | Upload size limit (20 GB default — hour-long camera exports are fine) |

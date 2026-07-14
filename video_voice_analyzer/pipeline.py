@@ -37,6 +37,16 @@ _live_model = None
 _model_lock = threading.Lock()
 
 
+# Far-field camera audio is faint: cut low-frequency rumble and strongly
+# boost quiet passages so both the VAD and the ASR get a usable signal.
+# Set AUDIO_FILTER="" to disable.
+AUDIO_FILTER = os.environ.get("AUDIO_FILTER", "highpass=f=100,dynaudnorm=m=30")
+
+# fsmn-vad speech/noise threshold: default 0.6 is tuned for close-mic
+# speech; lower values detect fainter speech (range roughly -1..1).
+VAD_THRES = float(os.environ.get("VAD_SPEECH_NOISE_THRES", "0.2"))
+
+
 def extract_audio(video_path: str, wav_path: str) -> None:
     """Strip the audio track from the video into a 16 kHz mono WAV file."""
     cmd = [
@@ -45,8 +55,10 @@ def extract_audio(video_path: str, wav_path: str) -> None:
         "-acodec", "pcm_s16le",
         "-ar", "16000",
         "-ac", "1",
-        wav_path,
     ]
+    if AUDIO_FILTER:
+        cmd += ["-af", AUDIO_FILTER]
+    cmd.append(wav_path)
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True)
     except FileNotFoundError:
@@ -79,13 +91,15 @@ def _model_kwargs(with_diarization: bool) -> dict:
         if with_diarization:
             kwargs.update(
                 vad_model="iic/speech_fsmn_vad_zh-cn-16k-common-pytorch",
-                vad_kwargs={"max_single_segment_time": 30000},
+                vad_kwargs={"max_single_segment_time": 30000,
+                            "speech_noise_thres": VAD_THRES},
                 spk_model="iic/speech_campplus_sv_zh-cn_16k-common",
             )
     elif with_diarization:
         kwargs.update(
             vad_model="fsmn-vad",
-            vad_kwargs={"max_single_segment_time": 60000},
+            vad_kwargs={"max_single_segment_time": 60000,
+                        "speech_noise_thres": VAD_THRES},
             punc_model="ct-punc",
             spk_model="cam++",
         )
@@ -116,6 +130,56 @@ def get_model():
         return _model
 
 
+def probe_duration(media_path: str):
+    """Duration in seconds via ffprobe, or None if it can't be determined."""
+    try:
+        proc = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "csv=p=0", media_path],
+            capture_output=True, text=True)
+        return float(proc.stdout.strip())
+    except Exception:
+        return None
+
+
+def audio_stats(wav_path: str) -> dict:
+    """Duration plus peak/RMS levels so silent or truncated extractions
+    are visible instead of a mystery."""
+    import math
+
+    import soundfile as sf
+
+    peak = 0.0
+    sumsq = 0.0
+    n = 0
+    with sf.SoundFile(wav_path) as f:
+        samplerate = f.samplerate
+        frames = f.frames
+        while True:
+            block = f.read(samplerate * 60, dtype="float32")
+            if len(block) == 0:
+                break
+            peak = max(peak, float(abs(block).max()))
+            sumsq += float((block.astype("float64") ** 2).sum())
+            n += len(block)
+    rms = math.sqrt(sumsq / n) if n else 0.0
+    to_db = lambda x: round(20 * math.log10(x), 1) if x > 0 else -120.0
+    return {
+        "duration_s": round(frames / samplerate, 1),
+        "peak_db": to_db(peak),
+        "rms_db": to_db(rms),
+    }
+
+
+def fallback_windows(duration_s: float, window_ms: int = 30000) -> list:
+    """Fixed windows covering the whole file, used when VAD hears nothing —
+    lets the ASR model make its own judgement about every second of audio."""
+    total_ms = int(duration_s * 1000)
+    return [(start, min(start + window_ms, total_ms))
+            for start in range(0, total_ms, window_ms)
+            if min(start + window_ms, total_ms) - start >= 1000]
+
+
 def get_vad_model():
     """Small voice-activity-detection model, used for the fast pre-scan."""
     global _vad_model
@@ -123,6 +187,8 @@ def get_vad_model():
         if _vad_model is None:
             from funasr import AutoModel
             _vad_model = AutoModel(model="fsmn-vad", device=_detect_device(),
+                                   speech_noise_thres=VAD_THRES,
+                                   max_single_segment_time=30000,
                                    disable_update=True)
         return _vad_model
 

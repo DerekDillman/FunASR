@@ -44,28 +44,50 @@ def process_job(job_id: str, video_path: Path, original_name: str):
     wav_path = _job_dir(job_id) / "audio.wav"
     try:
         _set(job_id, status="extracting_audio",
-             detail="Stripping audio track with ffmpeg...")
+             detail="Stripping audio track with ffmpeg (with far-field "
+                    "cleanup: rumble filter + loudness boost)...")
         pipeline.extract_audio(str(video_path), str(wav_path))
-        print(f"[{job_id}] audio extracted -> {wav_path}", flush=True)
+
+        stats = pipeline.audio_stats(str(wav_path))
+        video_dur = pipeline.probe_duration(str(video_path))
+        stats["video_duration_s"] = video_dur
+        _set(job_id, audio_stats=stats)
+        dur_note = (f"{stats['duration_s'] / 60:.1f} min of audio, "
+                    f"peak {stats['peak_db']} dB, average {stats['rms_db']} dB")
+        mismatch = ""
+        if video_dur and abs(video_dur - stats["duration_s"]) > 10:
+            mismatch = (f" WARNING: the video is {video_dur / 60:.1f} min long "
+                        f"but its audio track is only "
+                        f"{stats['duration_s'] / 60:.1f} min — the export's "
+                        f"audio may be incomplete.")
+        print(f"[{job_id}] audio extracted: {dur_note}.{mismatch}", flush=True)
 
         _set(job_id, status="detecting_speech",
-             detail="Scanning the audio for spoken voices (VAD). "
-                    "First run downloads the models, which can take a while...")
+             detail=f"Audio extracted ({dur_note}).{mismatch} Scanning for "
+                    f"voices (VAD sensitivity {pipeline.VAD_THRES}). First "
+                    f"run downloads the models, which can take a while...")
         regions = pipeline.detect_speech(str(wav_path))
         speech_ms = sum(e - s for s, e in regions)
         print(f"[{job_id}] VAD found {len(regions)} speech regions, "
               f"{speech_ms // 1000}s of speech total", flush=True)
 
+        brute_force = False
+        if not regions:
+            # Don't trust silence: let the ASR model judge every second
+            # of audio itself in fixed 30 s windows.
+            brute_force = True
+            regions = pipeline.fallback_windows(stats["duration_s"])
+            speech_ms = sum(e - s for s, e in regions)
+            print(f"[{job_id}] VAD heard nothing — brute-force scanning "
+                  f"{len(regions)} windows of 30s", flush=True)
+
         if not regions:
             _set(job_id, status="done",
                  transcript={"segments": [], "speakers": [], "full_text": ""},
                  analysis=None,
-                 analysis_error="No speech was detected anywhere in the audio "
-                                "track, so there is nothing to transcribe or "
-                                "analyze. Check that the export actually "
-                                "contains audible voices (try playing the "
-                                "extracted audio file).",
-                 detail="Complete — no speech detected",
+                 analysis_error=f"The extracted audio track is empty or "
+                                f"near-zero length ({dur_note}).{mismatch}",
+                 detail="Complete — no usable audio",
                  finished_at=time.time())
             return
 
@@ -79,13 +101,21 @@ def process_job(job_id: str, video_path: Path, original_name: str):
                  detail=f"Transcribing speech region {done} of {total} "
                         f"— {len(live)} voice segments heard so far")
 
+        if brute_force:
+            start_detail = (f"VAD heard nothing above the noise floor, so "
+                            f"every second of audio is being run through the "
+                            f"speech recognizer directly — "
+                            f"{len(regions)} windows of 30s...")
+        else:
+            start_detail = (f"Found {len(regions)} speech regions "
+                            f"({speech_ms // 60000}m "
+                            f"{speech_ms % 60000 // 1000}s of actual speech). "
+                            f"Transcribing them one by one...")
         _set(job_id, status="transcribing",
              progress={"regions_done": 0, "regions_total": len(regions),
                        "speech_done_ms": 0, "speech_total_ms": speech_ms,
                        "percent": 0},
-             detail=f"Found {len(regions)} speech regions "
-                    f"({speech_ms // 60000}m {speech_ms % 60000 // 1000}s of "
-                    f"actual speech). Transcribing them one by one...")
+             detail=start_detail)
         live = pipeline.transcribe_regions(str(wav_path), regions, on_update)
         print(f"[{job_id}] live pass done: {len(live)} segments with text",
               flush=True)
@@ -106,12 +136,14 @@ def process_job(job_id: str, video_path: Path, original_name: str):
 
         if not transcript["segments"]:
             _set(job_id, status="done", analysis=None,
-                 analysis_error="Speech-like audio was detected but nothing "
-                                "could be transcribed into words, so the LLM "
-                                "analysis was skipped. The audio may be too "
-                                "noisy/faint, or in a language the ASR model "
-                                "doesn't handle well (see the README's "
-                                "language note).",
+                 analysis_error=f"Nothing could be transcribed into words "
+                                f"even after scanning all of the audio "
+                                f"({dur_note}).{mismatch} Download the "
+                                f"extracted audio above and listen to it — "
+                                f"if you can clearly hear the voices in that "
+                                f"file, report back; if the voices are barely "
+                                f"audible even to you, the recording is below "
+                                f"what speech recognition can recover.",
                  detail="Complete — no transcribable speech",
                  finished_at=time.time())
             return
