@@ -2,15 +2,16 @@
 setlocal
 REM ============================================================
 REM  Video Voice Analyzer - one-shot Windows setup
-REM  Creates C:\ai, clones the repo, builds a venv, installs
-REM  dependencies, verifies GPU support, and starts the app.
+REM  Clones the repo into C:\ai\Local-Transcribe-Video-Into-Text,
+REM  builds a venv, installs dependencies, verifies GPU support,
+REM  and starts the app.
 REM  Safe to re-run: it updates instead of re-cloning.
 REM ============================================================
 
-set "AI_DIR=C:\ai"
+set "INSTALL_DIR=C:\ai\Local-Transcribe-Video-Into-Text"
 set "BRANCH=claude/video-audio-voice-analysis-j6k739"
 set "REPO_URL=https://github.com/DerekDillman/FunASR.git"
-set "APP_DIR=%AI_DIR%\FunASR\video_voice_analyzer"
+set "APP_DIR=%INSTALL_DIR%\video_voice_analyzer"
 
 where git >nul 2>nul || (
   echo [ERROR] git is not installed. Install it from https://git-scm.com and re-run.
@@ -22,15 +23,14 @@ where python >nul 2>nul || (
   pause & exit /b 1
 )
 
-echo === [1/6] Creating %AI_DIR% and fetching the code...
-if not exist "%AI_DIR%" mkdir "%AI_DIR%"
-if exist "%AI_DIR%\FunASR\.git" (
+echo === [1/6] Creating %INSTALL_DIR% and fetching the code...
+if exist "%INSTALL_DIR%\.git" (
   echo Repo already exists, updating it instead...
-  git -C "%AI_DIR%\FunASR" fetch origin %BRANCH% || (echo [ERROR] git fetch failed & pause & exit /b 1)
-  git -C "%AI_DIR%\FunASR" checkout %BRANCH%
-  git -C "%AI_DIR%\FunASR" pull origin %BRANCH%
+  git -C "%INSTALL_DIR%" fetch origin %BRANCH% || (echo [ERROR] git fetch failed & pause & exit /b 1)
+  git -C "%INSTALL_DIR%" checkout %BRANCH%
+  git -C "%INSTALL_DIR%" pull origin %BRANCH%
 ) else (
-  git clone -b %BRANCH% %REPO_URL% "%AI_DIR%\FunASR" || (echo [ERROR] git clone failed & pause & exit /b 1)
+  git clone -b %BRANCH% %REPO_URL% "%INSTALL_DIR%" || (echo [ERROR] git clone failed & pause & exit /b 1)
 )
 
 cd /d "%APP_DIR%"
